@@ -88,18 +88,24 @@ function iniciarAuditoria() {
     }
     hojaDeCola = ss.insertSheet(NOMBRE_HOJA_COLA);
     hojaDeCola.hideSheet(); // Solo para sistema, que no estorbe visualmente
-    const cabecerasDeCola = ['ID Componente', 'Ruta Virtual', 'URL Enlace', 'Caché de Permisos (JSON)', 'Raiz (bool)'];
+    const cabecerasDeCola = ['ID Componente', 'Ruta Virtual', 'URL Enlace', 'Caché de Permisos (JSON)', 'Raiz (bool)', 'Estado Paginacion Rama (JSON)'];
     hojaDeCola.appendRow(cabecerasDeCola);
 
 
     let nombreDrive = "Unidad Compartida Genérica";
     let carpetaRaizDrive;
     let urlRaizDrive;
+    let idCarpetaMadreDrive;
 
     // 4. Intentar consumir API de Google
     try {
         const infoAvanzadaDrive = Drive.Drives.get(idUnidadDrive, { useDomainAdminAccess: true });
         nombreDrive = infoAvanzadaDrive.name;
+
+        // Crear el contenedor físico en Drive usando el nuevo motor
+        idCarpetaMadreDrive = instanciarCarpetaMaestra(nombreDrive);
+        hojaReporte.appendRow(['*** CARPETA DE REPORTES EN DRIVE ***', `https://drive.google.com/drive/folders/${idCarpetaMadreDrive}`, 'Directorio', '']);
+        hojaReporte.appendRow(['---', '---', '---', '---']);
 
         carpetaRaizDrive = DriveApp.getFolderById(idUnidadDrive);
         urlRaizDrive = carpetaRaizDrive.getUrl();
@@ -176,12 +182,16 @@ function iniciarAuditoria() {
     // 5. Arranque real del worker inyectando el Root original al motor (Fila 2 en Backend de Cola)
     const permisosGeneralesRaiz = obtenerConjuntoPermisos(carpetaRaizDrive); // Llama funcion importada de API_Permisos.js
 
+    // N/A En la raíz porque es la Madre, luego las ramas derivantes inician sus libros vacíos.
+    const estadoPaginacionBase = { idSheet: null, filaActual: 1, ramaNombre: nombreDrive, parteActual: 0, idCarpetaRaiz: idCarpetaMadreDrive };
+
     hojaDeCola.appendRow([
         carpetaRaizDrive.getId(),
         nombreDrive,
         urlRaizDrive,
         JSON.stringify(permisosGeneralesRaiz),
-        true
+        true,
+        JSON.stringify(estadoPaginacionBase)
     ]);
 
     ui.alert('Motor analítico de permisos inicializado de fondo.\nLa auditoría tiene de límite 20m.\n\nEn caso de interrupción prematura por volumen, por favor ejecute "Continuar Auditoría" del menú superior.');
@@ -223,13 +233,15 @@ function continuarAuditoria() {
             return;
         }
 
-        // Extracción tipo Fila (Indice superior de cola, celda "A2" - "E2")
+        // Extracción tipo Fila (Indice superior de cola, celda "A2" - "F2")
         const rangoActualSuperior = hojaDeCola.getRange(2, 1, 1, hojaDeCola.getLastColumn());
         const columnaMapeada = rangoActualSuperior.getValues()[0];
 
         let permisosAlmacenadosJSON;
+        let paginacionRamaData;
         try {
             permisosAlmacenadosJSON = JSON.parse(columnaMapeada[3]);
+            paginacionRamaData = JSON.parse(columnaMapeada[5] || "{}"); // Respaldo json vacio
         } catch (e) {
             Logger.log(`JSON Crash parsing en caché fila ruta: ${columnaMapeada[1]}: Detalles JSON: ${e.message}`);
             hojaDeCola.deleteRow(2); // Suprimir registro corrompido, evita DeadLock cíclico.
@@ -241,7 +253,8 @@ function continuarAuditoria() {
             rutaArmada: columnaMapeada[1],
             urlVisita: columnaMapeada[2],
             permisosRecuperadosPadre: permisosAlmacenadosJSON,
-            banderaRaiz: columnaMapeada[4]
+            banderaRaiz: columnaMapeada[4],
+            trackerPaginacion: paginacionRamaData
         };
 
         let objetoCarpetaDrive;
@@ -259,7 +272,10 @@ function continuarAuditoria() {
         // 3. Revisión Delta: Identificar desviaciones de la norma base
         if (!entidadDirectorioActual.banderaRaiz) {
             // Enlaza la ejecución reportada a API_Permisos.js
-            registrarDiferenciasPermisos(entidadDirectorioActual.permisosRecuperadosPadre, permisosEntidadLocal, entidadDirectorioActual.rutaArmada, entidadDirectorioActual.urlVisita, 'Carpeta Plegable', hojaReporte, dominioOrganizacion);
+            const hallazgoCarpeta = registrarDiferenciasPermisos(entidadDirectorioActual.permisosRecuperadosPadre, permisosEntidadLocal, entidadDirectorioActual.rutaArmada, entidadDirectorioActual.urlVisita, 'Carpeta Plegable', dominioOrganizacion);
+            if (hallazgoCarpeta) {
+                entidadDirectorioActual.trackerPaginacion = volcarHallazgoAPaginacion(entidadDirectorioActual.trackerPaginacion, hallazgoCarpeta);
+            }
         }
 
         // 4. Extracción Lineal de los documentos simples hijos
@@ -271,9 +287,12 @@ function continuarAuditoria() {
                 const enlaceDocSalida = documentoSingular.getUrl();
                 try {
                     const permisosDelDocumento = obtenerConjuntoPermisos(documentoSingular);
-                    registrarDiferenciasPermisos(permisosEntidadLocal, permisosDelDocumento, senderoDocTexto, enlaceDocSalida, 'Documento Unitario', hojaReporte, dominioOrganizacion);
+                    const hallazgoDoc = registrarDiferenciasPermisos(permisosEntidadLocal, permisosDelDocumento, senderoDocTexto, enlaceDocSalida, 'Documento Unitario', dominioOrganizacion);
+                    if (hallazgoDoc) {
+                        entidadDirectorioActual.trackerPaginacion = volcarHallazgoAPaginacion(entidadDirectorioActual.trackerPaginacion, hallazgoDoc);
+                    }
                 } catch (errorlecturadoc) {
-                    hojaReporte.appendRow([senderoDocTexto, enlaceDocSalida, 'Documento Unitario', `Alerta de Lectura en Permisología: ${errorlecturadoc.message}`]);
+                    entidadDirectorioActual.trackerPaginacion = volcarHallazgoAPaginacion(entidadDirectorioActual.trackerPaginacion, [senderoDocTexto, enlaceDocSalida, 'Documento Unitario', `Alerta de Lectura en Permisología: ${errorlecturadoc.message}`]);
                 }
             }
         } catch (errorCargaFolders) {
@@ -286,12 +305,27 @@ function continuarAuditoria() {
             const foldersDebajo = objetoCarpetaDrive.getFolders();
             while (foldersDebajo.hasNext()) {
                 const subSubFolder = foldersDebajo.next();
+                const senderoNombre = `${entidadDirectorioActual.rutaArmada}/${subSubFolder.getName()}`;
+
+                let trackerHerencia = Object.assign({}, entidadDirectorioActual.trackerPaginacion);
+                // Regla: Si la carpeta que estoy enviando a la cola es hija de NIVEL 1 (su padre era banderaRaiz), le corto la dependencia y le instancio su propio libro nuevo base para que ella empiece a registrar sus ramas ahi.
+                if (entidadDirectorioActual.banderaRaiz) {
+                    trackerHerencia = {
+                        idSheet: null,
+                        filaActual: 1,
+                        ramaNombre: subSubFolder.getName(),
+                        parteActual: 0,
+                        idCarpetaRaiz: entidadDirectorioActual.trackerPaginacion.idCarpetaRaiz
+                    };
+                }
+
                 ramificacionesNuevasACola.push([
                     subSubFolder.getId(),
-                    `${entidadDirectorioActual.rutaArmada}/${subSubFolder.getName()}`,
+                    senderoNombre,
                     subSubFolder.getUrl(),
                     JSON.stringify(permisosEntidadLocal), // Se re-heredan estos como padre temporal
-                    false // Se levanta flag raíz natural
+                    false, // Ya no es raiz natural
+                    JSON.stringify(trackerHerencia) // Se serializa el objeto de estado de libro de Sheets a usar
                 ]);
             }
 

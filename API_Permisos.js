@@ -66,16 +66,16 @@ function obtenerNivelAccesoUsuario(emailUsuario, conjuntoPermisos) {
 }
 
 /**
- * Compara dos conjuntos de permisos y registra las diferencias detectadas en la hoja de Excel.
+ * Compara dos conjuntos de permisos y formatea las diferencias detectadas para su encolamiento.
  * @param {Object} conjuntoPadre - Permisos de la carpeta/unidad base.
  * @param {Object} conjuntoHijo - Permisos del archivo/carpeta interno a evaluar.
  * @param {string} ruta - Ruta amigable del archivo o carpeta.
  * @param {string} url - Enlace URL al archivo o carpeta.
  * @param {string} tipoItem - Denominación en texto (ej. "Carpeta", "Archivo").
- * @param {Sheet} hojaReporte - Objeto de Apps Script apuntando a la hoja de reporte final.
  * @param {string} dominioOrganizacion - El dominio principal de la cuenta con la que se ejecuta (texto).
+ * @return {Array|null} Retorna el arreglo de la fila `[ruta, url, tipo, usuariosTexto]` si hubo hallazgos, o null si todo está en orden.
  */
-function registrarDiferenciasPermisos(conjuntoPadre, conjuntoHijo, ruta, url, tipoItem, hojaReporte, dominioOrganizacion) {
+function registrarDiferenciasPermisos(conjuntoPadre, conjuntoHijo, ruta, url, tipoItem, dominioOrganizacion) {
     // Combinar usuarios de ambos niveles para comprobar diferencias
     const todosLosUsuarios = new Set([
         ...conjuntoPadre.editores,
